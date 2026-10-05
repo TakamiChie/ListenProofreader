@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "LISTEN 文字起こし校正アシスト",
+  "version": "1.0.0",
+  "description": "未分離の話者・文字数の偏った段落へのジャンプと、CSVによる一括置換候補の入力を補助します。",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://listen.style/*"],
+      "js": ["csv.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
