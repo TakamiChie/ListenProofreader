@@ -189,13 +189,16 @@
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  async function showCandidate(index) {
+  async function showCandidate(index, event) {
+    // CSV navigation is outside LISTEN's panel. Keep its @click.outside
+    // handler from closing the panel, including deferred Alpine handlers.
+    event?.stopPropagation();
     if (busy || index < 0 || index >= candidates.length) return;
     busy = true;
     updateCSVStatus();
     const startingRoot = root;
     try {
-      // Let LISTEN's @click.outside handler finish before opening its panel.
+      // Let pending UI updates finish before checking the panel visibility.
       await pause();
       const fields = replaceForm();
       if (!fields) throw new Error("一括置換フォームが見つかりません。LISTENの画面構造を確認してください。");
@@ -331,8 +334,8 @@
     const loadButton = button("CSV読込", () => {
       if (!busy) fileInput.click();
     });
-    previousButton = button("前の候補", () => showCandidate(candidateIndex - 1));
-    nextButton = button("次の候補", () => showCandidate(candidateIndex + 1));
+    previousButton = button("前の候補", event => showCandidate(candidateIndex - 1, event));
+    nextButton = button("次の候補", event => showCandidate(candidateIndex + 1, event));
     csvStatus = element("span", "", "text-xs text-neutral-500 dark:text-neutral-400");
     const clear = button("CSV解除", () => {
       if (busy) return;

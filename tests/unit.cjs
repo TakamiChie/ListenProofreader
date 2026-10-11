@@ -143,31 +143,64 @@ check('native setter dispatches reactive input and change events', () => {
   const after = new FakeInput();
   const regex = { classList: { contains: () => regex.active }, active: true, click() { this.active = false; } };
   const search = { disabled: false, count: 0, click() { this.count++; } };
-  const panel = { getClientRects: () => [{}] };
+  let panelOpen = true;
+  let toggleCount = 0;
+  const panel = { getClientRects: () => panelOpen ? [{}] : [] };
+  const toggle = { click() { toggleCount++; panelOpen = !panelOpen; } };
   const form = {
     isConnected: true, parentElement: panel, contains: () => true,
     querySelector: selector => ({ '[x-model="replacementString"]': after, 'button[type="submit"]': search, 'button[aria-label="正規表現"]': regex })[selector]
   };
   before.closest = () => form;
-  const replaceRoot = { querySelector: () => before };
+  const replaceRoot = { querySelector: selector => ({
+    '[x-ref="replaceBeforeInput"]': before,
+    'button[aria-label="一括置換"]': toggle
+  })[selector] };
+  async function clickCandidate(index) {
+    let stopped = false;
+    const pending = api.showCandidate(index, { stopPropagation() { stopped = true; } });
+    // Model a document-level @click.outside handler deferred by Alpine.
+    const outside = stopped ? Promise.resolve() : new Promise(resolve => {
+      setTimeout(() => { panelOpen = false; resolve(); }, 10);
+    });
+    await Promise.all([pending, outside]);
+    assert.equal(stopped, true);
+  }
   const candidates = [{ before: 'a.b', after: 'new', note: '<img onerror=alert(1)>' }, { before: 'delete', after: '', note: '' }];
   configure({ root: replaceRoot, candidates });
   const note = { textContent: '' };
   api.setNote(note);
-  await api.showCandidate(0);
+  await clickCandidate(0);
   check('candidate inputs, literal search, search click, safe text note', () => {
     assert.equal(before.value, 'a.b'); assert.equal(after.value, 'new');
     assert.equal(search.count, 1); assert.equal(regex.active, false);
     assert.match(note.textContent, /<img onerror=alert\(1\)>/);
     assert.equal(api.getState().candidateIndex, 0);
+    assert.equal(panelOpen, true);
+    assert.equal(toggleCount, 0);
   });
-  await api.showCandidate(1);
+  await clickCandidate(1);
   check('deletion and disable next at last candidate', () => {
     assert.equal(after.value, ''); assert.equal(nextButton.disabled, true);
+    assert.equal(panelOpen, true);
+    assert.equal(toggleCount, 0);
+    assert.equal(search.count, 2);
   });
-  await api.showCandidate(0);
+  await clickCandidate(0);
   check('previous candidate and busy reset', () => {
     assert.equal(before.value, 'a.b'); assert.equal(api.getState().busy, false);
+    assert.equal(panelOpen, true);
+    assert.equal(toggleCount, 0);
+    assert.equal(search.count, 3);
+  });
+  panelOpen = false;
+  await clickCandidate(1);
+  check('closed replacement panel opens before candidate search', () => {
+    assert.equal(panelOpen, true);
+    assert.equal(toggleCount, 1);
+    assert.equal(before.value, 'delete');
+    assert.equal(search.count, 4);
+    assert.equal(api.getState().candidateIndex, 1);
   });
   configure();
   await api.showCandidate(0);
