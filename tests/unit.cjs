@@ -17,7 +17,7 @@ class FakeInput {
 }
 class FakeTextArea extends FakeInput {}
 const ctx = {
-  setTimeout, clearTimeout, Event, TextDecoder,
+  setTimeout, clearTimeout, Event, TextDecoder, URL,
   HTMLInputElement: FakeInput, HTMLTextAreaElement: FakeTextArea,
   getComputedStyle: () => ({ visibility: 'visible' }),
   document: { addEventListener() {}, querySelectorAll: () => [] },
@@ -26,9 +26,12 @@ const ctx = {
 };
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(path.join(base, 'csv.js'), 'utf8'), ctx);
+vm.runInContext(fs.readFileSync(path.join(base, 'local-ai.js'), 'utf8'), ctx);
 let content = fs.readFileSync(path.join(base, 'content.js'), 'utf8');
 content = content.replace(/  start\(\);\s*\}\)\(\);\s*$/, `  globalThis.testAPI = {
     rowText, lengthOf, targets, jump, setInput, showCandidate, loadCSV, limitsValid,
+    generateAI, updateAIButton,
+    configureAI(settings) { aiSettings = settings; aiButton = null; },
     configure(options) {
       root = options.root; bar = options.bar; status = options.status;
       count = options.count; shortInput = options.shortInput; longInput = options.longInput;
@@ -126,6 +129,10 @@ check('native setter dispatches reactive input and change events', () => {
 });
 (async () => {
   configure();
+  api.configureAI({ enabled: false });
+  api.updateAIButton();
+  await api.generateAI();
+  check('disabled AI creates no button or request', () => assert.equal(api.getState().busy, false));
   const source = fs.readFileSync(path.join(__dirname, 'sjis.csv'));
   await api.loadCSV({ name: 'sjis.csv', size: source.length, arrayBuffer: async () => source });
   check('Shift_JIS file decoding', () => {
@@ -210,6 +217,46 @@ check('native setter dispatches reactive input and change events', () => {
   check('missing native form reports failure without advancing', () => {
     assert.match(status.textContent, /フォームが見つかりません/);
     assert.equal(api.getState().candidateIndex, -1);
+  });
+  const editorURL = 'https://listen.style/p/takamichie/20261011-recent-events-october/transcript_editor';
+  ctx.location = { href: editorURL };
+  let requestedURL;
+  ctx.fetch = async url => {
+    requestedURL = url;
+    return { ok: true, headers: { get: () => 'text/plain; charset=utf-8' }, text: async () => '誤宇' };
+  };
+  ctx.AbortController = AbortController;
+  ctx.setInterval = setInterval;
+  ctx.clearInterval = clearInterval;
+  let reply = { type: 'result', count: 1, csv: '誤字,修正案,備考\n誤宇,誤字,確認' };
+  ctx.chrome = { runtime: { connect() {
+    let onMessage;
+    return {
+      onMessage: { addListener(fn) { onMessage = fn; } },
+      onDisconnect: { addListener() {} }, disconnect() {},
+      postMessage(message) { if (message.type === 'generate') queueMicrotask(() => onMessage(reply)); }
+    };
+  } } };
+  configure({ candidates });
+  api.configureAI({ enabled: true, model: 'installed' });
+  await api.generateAI();
+  check('AI CSV enters existing candidate queue', () => {
+    assert.equal(requestedURL, editorURL.replace('transcript_editor', 'transcript.txt'));
+    assert.equal(api.getState().candidates[0].before, '誤宇');
+    assert.equal(api.getState().candidateIndex, -1);
+    assert.equal(api.getState().busy, false);
+  });
+  reply = { type: 'error', error: '接続失敗' };
+  await api.generateAI();
+  check('AI failure preserves candidates', () => {
+    assert.equal(api.getState().candidates[0].before, '誤宇');
+    assert.match(status.textContent, /AI生成失敗/);
+  });
+  reply = { type: 'result', count: 0, csv: null };
+  await api.generateAI();
+  check('empty AI result preserves candidates', () => {
+    assert.equal(api.getState().candidates[0].before, '誤宇');
+    assert.match(status.textContent, /候補はありません/);
   });
   console.log(`Completed: ${passed} test groups.`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

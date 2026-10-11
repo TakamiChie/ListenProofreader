@@ -4,10 +4,13 @@
   "version": "1.0.0",
   "description": "未分離の話者・文字数の偏った段落へのジャンプと、CSVによる一括置換候補の入力を補助します。",
   "permissions": ["storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
   "content_scripts": [
     {
       "matches": ["https://listen.style/*"],
-      "js": ["csv.js", "content.js"],
+      "js": ["csv.js", "local-ai.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

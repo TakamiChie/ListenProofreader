@@ -29,6 +29,11 @@
   let busy = false;
   let loadGeneration = 0;
   let resizeObserver;
+  let aiSettings = { ...globalThis.ListenProofreaderAI.defaults };
+  let aiButton;
+  let aiPort;
+  let aiRun = 0;
+  let aiController;
   const pause = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 
   function element(tag, text, className = "") {
@@ -180,6 +185,89 @@
       : "CSV未読込";
     previousButton.disabled = busy || candidateIndex <= 0;
     nextButton.disabled = busy || !candidates.length || candidateIndex >= candidates.length - 1;
+    if (aiButton) aiButton.disabled = busy;
+  }
+
+  function updateAIButton() {
+    if (!bar) return;
+    if (!aiSettings.enabled) {
+      aiButton?.remove();
+      aiButton = null;
+      cancelAI();
+      return;
+    }
+    if (!aiButton || !bar.contains(aiButton)) {
+      aiButton = button("AI候補生成", generateAI);
+      bar.querySelector(".lp-csv-line").append(aiButton);
+    }
+    aiButton.disabled = busy;
+  }
+
+  function cancelAI() {
+    ++aiRun;
+    aiController?.abort();
+    aiController = null;
+    if (aiPort) { aiPort.disconnect(); aiPort = null; }
+  }
+
+  async function generateAI() {
+    if (busy || !aiSettings.enabled) return;
+    const run = ++aiRun;
+    const startingRoot = root;
+    const startingURL = location.href;
+    busy = true;
+    updateCSVStatus();
+    let heartbeat;
+    let port;
+    try {
+      if (!aiSettings.model) throw new Error("拡張機能の設定画面でモデルを選択してください。");
+      report("文字起こしを取得しています…");
+      aiController = new AbortController();
+      const timeout = setTimeout(() => aiController?.abort(), 30000);
+      let text;
+      try {
+        const response = await fetch(globalThis.ListenProofreaderAI.transcriptURL(startingURL), { signal: aiController.signal });
+        if (!response.ok) throw new Error(`文字起こしの取得に失敗しました（HTTP ${response.status}）。`);
+        if (!(response.headers.get("content-type") || "").includes("text/plain")) throw new Error("文字起こしの応答がテキストではありません。ログイン状態を確認してください。");
+        text = await response.text();
+      } finally { clearTimeout(timeout); }
+      if (run !== aiRun) throw new Error("画面または設定が切り替わりました。");
+      port = chrome.runtime.connect({ name: "lp-ai" });
+      aiPort = port;
+      const result = await new Promise((resolve, reject) => {
+        port.onMessage.addListener(message => {
+          if (message.type === "progress") report(`AI候補を生成しています… ${message.current}/${message.total}`);
+          if (message.type === "result") resolve(message);
+          if (message.type === "error") reject(new Error(message.error));
+        });
+        port.onDisconnect.addListener(() => reject(new Error("AIとの接続が切れました。AIサーバーの起動状態を確認してください。")));
+        // Runtime messages keep the MV3 worker alive during long inference.
+        heartbeat = setInterval(() => {
+          if (location.href !== startingURL) { cancelAI(); return; }
+          try { port.postMessage({ type: "heartbeat" }); } catch { clearInterval(heartbeat); }
+        }, 20000);
+        port.postMessage({ type: "generate", text });
+      });
+      if (run !== aiRun || startingRoot !== root || startingURL !== location.href) throw new Error("画面または設定が切り替わりました。");
+      if (!result.count) {
+        report("AIによる誤字候補はありませんでした。以前の候補は保持しています。");
+      } else {
+        const parsed = globalThis.ListenProofreaderCSV.candidatesFromCSV(result.csv);
+        candidates = parsed.candidates;
+        candidateIndex = -1;
+        if (note) note.textContent = "AI生成CSVを読み込みました。「次の候補」で内容を確認してください。";
+        report(`AI生成CSV：${candidates.length}件。「次の候補」で確認してください。`);
+      }
+    } catch (error) {
+      if (startingRoot === root) report(`AI生成失敗：${error.message} 以前の候補は保持しています。`);
+    } finally {
+      clearInterval(heartbeat);
+      port?.disconnect();
+      if (aiPort === port) aiPort = null;
+      aiController = null;
+      busy = false;
+      updateCSVStatus();
+    }
   }
 
   function setInput(input, value) {
@@ -268,6 +356,7 @@
   }
 
   function mount(editor) {
+    cancelAI();
     root = editor;
     anchorRow = null;
     useViewport = true;
@@ -322,7 +411,7 @@
     shortInput = min.input;
     longInput = max.input;
     lengthLine.append(min.wrapper, max.wrapper, button("次の短い段落", () => jump("short")), button("次の長い段落", () => jump("long")));
-    const csvLine = element("div", undefined, "lp-line");
+    const csvLine = element("div", undefined, "lp-line lp-csv-line");
     fileInput = element("input");
     fileInput.type = "file";
     fileInput.accept = ".csv,text/csv";
@@ -355,6 +444,7 @@
     statusLine.append(status);
     body.append(lengthLine, csvLine, statusLine);
     bar.append(summary, body);
+    updateAIButton();
     const firstSection = [...root.children].find(el => el.tagName === "SECTION");
     if (firstSection) root.insertBefore(bar, firstSection);
     else root.prepend(bar);
@@ -371,6 +461,7 @@
       /^transcriptEditor\s*\(/.test(el.getAttribute("x-data") || ""));
     if (editor && (!bar?.isConnected || editor !== root)) mount(editor);
     if (!editor && bar) {
+      cancelAI();
       bar.remove();
       note?.remove();
       root = null;
@@ -407,7 +498,8 @@
 
   async function start() {
     try {
-      const saved = await globalThis.chrome?.storage?.local?.get("lpPreferences");
+      const saved = await globalThis.chrome?.storage?.local?.get(["lpPreferences", "lpAI"]);
+      aiSettings = { ...globalThis.ListenProofreaderAI.defaults, ...saved?.lpAI };
       const prefs = saved?.lpPreferences;
       if (prefs && Number.isInteger(prefs.shortLimit) && Number.isInteger(prefs.longLimit) &&
         prefs.shortLimit >= 1 && prefs.longLimit >= prefs.shortLimit && prefs.longLimit <= 100000) {
@@ -416,6 +508,13 @@
         collapsed = Boolean(prefs.collapsed);
       }
     } catch { /* Defaults also work without extension storage in a local test. */ }
+    globalThis.chrome?.storage?.onChanged?.addListener((changes, area) => {
+      if (area === "local" && changes.lpAI) {
+        cancelAI();
+        aiSettings = { ...globalThis.ListenProofreaderAI.defaults, ...changes.lpAI.newValue };
+        updateAIButton();
+      }
+    });
     reconcile();
     new MutationObserver(records => {
       if (records.some(record => !record.target.closest?.("#listen-proofreader, [data-lp-note]"))) schedule();

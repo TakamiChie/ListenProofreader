@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main { max-width: 640px; margin: 40px auto; padding: 0 24px; }
+h1 { font-size: 22px; margin-bottom: 28px; }
+label { display: block; margin: 20px 0 8px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 8px; }
+input[type=url], select { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid GrayText; border-radius: 5px; background: Field; color: FieldText; font: inherit; }
+button { padding: 8px 14px; border: 1px solid #5289d9; border-radius: 5px; background: ButtonFace; color: ButtonText; cursor: pointer; font: inherit; }
+button:disabled { opacity: .6; cursor: wait; }
+p { font-size: 14px; line-height: 1.7; color: GrayText; }
+#status { color: CanvasText; overflow-wrap: anywhere; }
